@@ -1,36 +1,90 @@
 #!/bin/bash
 
-REPO_LIST_FILE="repos.txt"
-CLONE_DIR="output"
-INIT_SCRIPT="init.gradle"
-CUSTOM_RECIPE_DIR="custom-recipe"
+set -e
 
-echo "Building custom recipe JAR..."
-cd "$CUSTOM_RECIPE_DIR" || exit 1
-./gradlew clean build || exit 1
-cd - || exit 1
+# --------------------------------------
+# CONFIGURATION
+# --------------------------------------
+REPOS_FILE="repos.txt"
+CLONE_DIR="output"
+BRANCH_NAME="rewrite-migration"
+LOG_FILE="migration.log"
+
+# --------------------------------------
+# LOGGING UTILS
+# --------------------------------------
+log() {
+  local type="$1"; shift
+  local ts
+  ts=$(date '+%Y-%m-%d %H:%M:%S')
+
+  case "$type" in
+    INFO) echo -e "[${ts}] \033[1;34mINFO\033[0m: $*" | tee -a "$LOG_FILE" ;;
+    SUCCESS) echo -e "[${ts}] \033[1;32mSUCCESS\033[0m: $*" | tee -a "$LOG_FILE" ;;
+    WARN) echo -e "[${ts}] \033[1;33mWARNING\033[0m: $*" | tee -a "$LOG_FILE" ;;
+    ERROR) echo -e "[${ts}] \033[1;31mERROR\033[0m: $*" | tee -a "$LOG_FILE" ;;
+    *) echo -e "[${ts}] $*" | tee -a "$LOG_FILE" ;;
+  esac
+}
+
+# --------------------------------------
+# START
+# --------------------------------------
+log INFO "🚀 Starting migration runner..."
+
+if [[ ! -f "$REPOS_FILE" ]]; then
+  log ERROR "Repository list file '$REPOS_FILE' not found!"
+  exit 1
+fi
 
 mkdir -p "$CLONE_DIR"
 
-while IFS= read -r REPO_URL; do
-  [[ -z "$REPO_URL" || "$REPO_URL" =~ ^# ]] && continue
+while IFS= read -r repo_url || [[ -n "$repo_url" ]]; do
+  [[ -z "$repo_url" || "$repo_url" =~ ^# ]] && continue
 
-  REPO_NAME=$(basename "$REPO_URL" .git)
-  TARGET_DIR="$CLONE_DIR/$REPO_NAME"
+  repo_name=$(basename "$repo_url" .git)
+  repo_dir="${CLONE_DIR}/${repo_name}"
 
-  if [ -d "$TARGET_DIR" ]; then
-    echo "Skipping $REPO_NAME: already exists."
+  log INFO "📦 Cloning $repo_url..."
+  if [ -d "$repo_dir" ]; then
+    log WARN "Repository $repo_name already exists. Pulling latest changes..."
+    (cd "$repo_dir" && git pull) || { log ERROR "Failed to pull $repo_name"; continue; }
+  else
+    git clone "$repo_url" "$repo_dir" || { log ERROR "Failed to clone $repo_url"; continue; }
+  fi
+
+  cd "$repo_dir" || { log ERROR "Failed to enter directory $repo_dir"; continue; }
+
+  # Check for Gradle
+  if [[ ! -f "build.gradle" && ! -f "build.gradle.kts" ]]; then
+    log WARN "No Gradle build file found in $repo_name. Skipping..."
+    cd - >/dev/null
     continue
   fi
 
-  echo "Cloning $REPO_URL into $TARGET_DIR..."
-  git clone "$REPO_URL" "$TARGET_DIR"
+  # Create migration branch
+  git checkout -b "$BRANCH_NAME" || git checkout "$BRANCH_NAME"
+  log INFO "🛠️  Running OpenRewrite migration in $repo_name..."
 
-  echo "Running OpenRewrite on $REPO_NAME..."
-  cd "$TARGET_DIR" || continue
-  ./gradlew rewriteRun --init-script "../../$INIT_SCRIPT"
-  cd - > /dev/null
+  # Run Rewrite (logs will be appended to file)
+  {
+    ./gradlew rewriteRun --init-script ../../init.gradle --stacktrace
+  } &>> "../../$LOG_FILE" || {
+    log ERROR "Rewrite run failed in $repo_name"
+    cd - >/dev/null
+    continue
+  }
 
-done < "$REPO_LIST_FILE"
+  # Check for changes
+  if [[ -n $(git status --porcelain) ]]; then
+    git add .
+    git commit -m "Applied OpenRewrite migrations" || log WARN "Nothing to commit in $repo_name"
+    log SUCCESS "✅ Migration complete for $repo_name (changes committed on $BRANCH_NAME)"
+  else
+    log INFO "No changes detected for $repo_name"
+  fi
 
-echo "✅ Migration complete."
+  cd - >/dev/null
+done < "$REPOS_FILE"
+
+log SUCCESS "🎉 Migration script completed. Check '$LOG_FILE' for details."
