@@ -1,0 +1,2 @@
+https://github.com/your-org/project-a.git
+https://github.com/your-org/project-b.git

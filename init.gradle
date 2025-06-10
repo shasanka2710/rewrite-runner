@@ -1,0 +1,35 @@
+allprojects {
+    buildscript {
+        repositories {
+            mavenCentral()
+            flatDir {
+                dirs "../custom-recipe/build/libs"
+            }
+        }
+        dependencies {
+            classpath("org.openrewrite:rewrite-gradle-plugin:6.4.1")
+        }
+    }
+
+    afterEvaluate {
+        apply plugin: "org.openrewrite.rewrite"
+
+        rewrite {
+            activeRecipe(
+                    "org.openrewrite.java.spring.framework.UpgradeSpringFramework_6_0",
+                    "org.openrewrite.java.spring.security6.UpgradeSpringSecurity_6_0",
+                    "org.openrewrite.java.migrate.jakarta.JavaxMigrationToJakarta",
+                    "org.openrewrite.gradle.UpdateGradleDependency",
+                    "org.openrewrite.gradle.plugins.UpgradeGradleWrapper",
+                    "org.example.CustomTldAndJspMigrationRecipe"
+            )
+        }
+
+        dependencies {
+            rewrite("org.openrewrite.recipe:rewrite-spring:5.2.0")
+            rewrite("org.openrewrite.recipe:rewrite-migrate-java:2.0.0")
+            rewrite("org.openrewrite.recipe:rewrite-gradle:2.0.4")
+            rewrite(name: "custom-recipe", ext: "jar")
+        }
+    }
+}
